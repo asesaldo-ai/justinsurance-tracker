@@ -1,0 +1,24 @@
+{
+  "name": "ghl-message-tracker",
+  "version": "1.0.0",
+  "description": "GHL Message Response Tracking System with Email Alerts",
+  "main": "justinsurance-backend.js",
+  "scripts": {
+    "start": "node justinsurance-backend.js",
+    "dev": "nodemon justinsurance-backend.js",
+    "justinsurance": "node justinsurance-backend.js",
+    "ji": "node justinsurance-backend.js"
+  },
+  "keywords": ["gohighlevel", "ghl", "message-tracking", "webhook"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "nodemailer": "^6.9.7",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
