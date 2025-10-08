@@ -102,26 +102,41 @@ function getNextBusinessHoursTime() {
 
 app.post('/webhook/incoming-message', (req, res) => {
     console.log('📨 Incoming message webhook received');
+    console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
     
-    const {
+    // Accept multiple field name formats (camelCase, snake_case, PascalCase)
+    const contactId = req.body.contactId || req.body.contact_id || req.body.ContactId || req.body.contactid;
+    const conversationId = req.body.conversationId || req.body.conversation_id || req.body.ConversationId || req.body.conversationid;
+    const locationId = req.body.locationId || req.body.location_id || req.body.LocationId;
+    const messageBody = req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
+    const type = req.body.type || req.body.message_type || req.body.Type || 'SMS';
+    const contactName = req.body.contactName || req.body.contact_name || req.body.name || req.body.ContactName || 'Unknown Contact';
+    const dateAdded = req.body.dateAdded || req.body.date_added || req.body.DateAdded || req.body.created_at;
+    const assignedTo = req.body.assignedTo || req.body.assigned_to || req.body.AssignedTo;
+
+    console.log('📋 Extracted fields:', {
         contactId,
         conversationId,
         locationId,
-        messageBody,
+        messageBody: messageBody ? messageBody.substring(0, 50) + '...' : 'none',
         type,
         contactName,
-        dateAdded,
-        assignedTo // This field contains the assigned user
-    } = req.body;
+        assignedTo
+    });
 
     if (!conversationId || !contactId) {
-        return res.status(400).json({ error: 'Missing required fields' });
+        console.log('❌ Missing required fields! conversationId:', conversationId, 'contactId:', contactId);
+        return res.status(400).json({ 
+            error: 'Missing required fields',
+            received: Object.keys(req.body),
+            needed: ['contactId or contact_id', 'conversationId or conversation_id']
+        });
     }
 
     // CRITICAL: Filter by assigned user
     // Only track if assigned to "Support Team"
-    if (assignedTo !== CONFIG.ASSIGNED_USER_FILTER) {
-        console.log(`⏭️  Skipping - Not assigned to ${CONFIG.ASSIGNED_USER_FILTER} (assigned to: ${assignedTo || 'none'})`);
+    if (assignedTo && assignedTo !== CONFIG.ASSIGNED_USER_FILTER) {
+        console.log(`⏭️  Skipping - Not assigned to ${CONFIG.ASSIGNED_USER_FILTER} (assigned to: ${assignedTo})`);
         return res.json({ 
             success: true, 
             skipped: true, 
@@ -134,9 +149,9 @@ app.post('/webhook/incoming-message', (req, res) => {
         conversation = {
             conversationId,
             contactId,
-            contactName: contactName || 'Unknown Contact',
+            contactName: contactName,
             locationId,
-            assignedTo,
+            assignedTo: assignedTo || 'Support Team',
             messages: [],
             lastInbound: null,
             lastResponse: null,
@@ -149,31 +164,32 @@ app.post('/webhook/incoming-message', (req, res) => {
     conversation.messages.push({
         id: `msg_${Date.now()}_${Math.random()}`,
         type: 'inbound',
-        body: messageBody,
+        body: messageBody || 'No message body',
         channel: type,
         timestamp
     });
 
     conversation.lastInbound = timestamp;
     conversation.needsResponse = true;
-    conversation.assignedTo = assignedTo; // Update assigned user
+    conversation.assignedTo = assignedTo || 'Support Team';
 
     console.log(`✅ Tracked Support Team message: ${contactName} (${conversationId})`);
     
-    res.json({ success: true, conversationId, assignedTo });
+    res.json({ success: true, conversationId, assignedTo: conversation.assignedTo });
 });
 
 app.post('/webhook/outgoing-message', (req, res) => {
     console.log('📤 Outgoing message webhook received');
+    console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
     
-    const {
-        conversationId,
-        messageBody,
-        userId,
-        dateAdded
-    } = req.body;
+    // Accept multiple field name formats
+    const conversationId = req.body.conversationId || req.body.conversation_id || req.body.ConversationId;
+    const messageBody = req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
+    const userId = req.body.userId || req.body.user_id || req.body.UserId;
+    const dateAdded = req.body.dateAdded || req.body.date_added || req.body.DateAdded || req.body.created_at;
 
     if (!conversationId) {
+        console.log('❌ Missing conversationId in outgoing webhook');
         return res.status(400).json({ error: 'Missing conversationId' });
     }
 
@@ -187,7 +203,7 @@ app.post('/webhook/outgoing-message', (req, res) => {
     conversation.messages.push({
         id: `msg_${Date.now()}_${Math.random()}`,
         type: 'outbound',
-        body: messageBody,
+        body: messageBody || 'Response sent',
         userId,
         timestamp
     });
