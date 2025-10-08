@@ -1,6 +1,6 @@
-app.get('/', (req, res) => {
-  res.send('✅ Support Message Tracker backend is running successfully!');
-});
+// JustInsurance Message Response Tracker - Backend API
+// Filters for "Support Team" assigned conversations only
+// Sends alerts only during business hours: Mon-Fri 8am-10pm, Sat-Sun 8am-6pm EST
 
 require('dotenv').config();
 const express = require('express');
@@ -20,13 +20,13 @@ const CONFIG = {
     WARNING_THRESHOLD: (process.env.WARNING_MINUTES || 5) * 60 * 1000,
     CRITICAL_THRESHOLD: (process.env.CRITICAL_MINUTES || 15) * 60 * 1000,
     EMAIL_ALERTS: process.env.EMAIL_ALERTS_ENABLED !== 'false',
-    EMAIL_FROM: process.env.EMAIL_FROM || 'alerts@justinsuranceco.com',
+    EMAIL_FROM: process.env.EMAIL_FROM || 'alerts@justinsurance.com',
     EMAIL_TO: process.env.EMAIL_TO ? process.env.EMAIL_TO.split(',') : ['support@justinsurance.com'],
     SMTP_HOST: process.env.SMTP_HOST || 'smtp.gmail.com',
     SMTP_PORT: parseInt(process.env.SMTP_PORT) || 587,
     SMTP_SECURE: process.env.SMTP_SECURE === 'true' || false,
-    SMTP_USER: process.env.SMTP_USER || 'support@yourinsurancelicense.com',
-    SMTP_PASS: process.env.SMTP_PASS || 'Telesales123$',
+    SMTP_USER: process.env.SMTP_USER || 'your-email@gmail.com',
+    SMTP_PASS: process.env.SMTP_PASS || 'your-app-password',
     
     // JustInsurance specific settings
     ASSIGNED_USER_FILTER: 'Support Team', // Only track "Support Team" conversations
