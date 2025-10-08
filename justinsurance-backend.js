@@ -114,8 +114,15 @@ app.post('/webhook/incoming-message', (req, res) => {
     let messageBody = customData.messageBody || req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
     let type = customData.type || req.body.type || req.body.message_type || req.body.Type || 'SMS';
     let contactName = customData.contactName || req.body.contactName || req.body.contact_name || req.body.name || req.body.ContactName || req.body.full_name || req.body.email || 'Unknown Contact';
-    let dateAdded = customData.dateAdded || req.body.dateAdded || req.body.date_added || req.body.DateAdded || req.body.date_created || req.body.created_at;
+    let dateAdded = customData.dateAdded || req.body.dateAdded || req.body.date_added || req.body.DateAdded;
     let assignedTo = customData.assignedTo || req.body.assignedTo || req.body.assigned_to || req.body.AssignedTo;
+    
+    // CRITICAL: GHL's "Customer Replied" trigger doesn't send message timestamp
+    // It only sends contact/conversation creation dates which can be very old
+    // So we ALWAYS use current time when webhook arrives = actual message time
+    const timestamp = Date.now();
+    
+    console.log('⏰ Using current time as message timestamp (GHL does not provide message timestamp)');
     
     // Check location object
     if (!locationId && req.body.location) {
@@ -163,23 +170,6 @@ app.post('/webhook/incoming-message', (req, res) => {
             reason: `Not assigned to ${CONFIG.ASSIGNED_USER_FILTER}` 
         });
     }
-    
-    // Extract timestamp
-    const timestamp = dateAdded ? new Date(dateAdded).getTime() : Date.now();
-    
-    // CRITICAL: Only track messages from the last 10 minutes
-    // This prevents tracking old/historical messages when workflow first activates
-    const messageAge = Date.now() - timestamp;
-    const TEN_MINUTES = 10 * 60 * 1000;
-    
-    if (messageAge > TEN_MINUTES) {
-        console.log(`⏭️  Skipping old message (${Math.floor(messageAge / 60000)} minutes old) from ${contactName}`);
-        return res.json({ 
-            success: true, 
-            skipped: true, 
-            reason: 'Message too old (older than 10 minutes)' 
-        });
-    }
 
     let conversation = conversations.get(conversationId);
     if (!conversation) {
@@ -197,7 +187,6 @@ app.post('/webhook/incoming-message', (req, res) => {
         conversations.set(conversationId, conversation);
     }
 
-    const timestamp = dateAdded ? new Date(dateAdded).getTime() : Date.now();
     conversation.messages.push({
         id: `msg_${Date.now()}_${Math.random()}`,
         type: 'inbound',
