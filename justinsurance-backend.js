@@ -104,15 +104,35 @@ app.post('/webhook/incoming-message', (req, res) => {
     console.log('📨 Incoming message webhook received');
     console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
     
-    // Accept multiple field name formats (camelCase, snake_case, PascalCase)
-    const contactId = req.body.contactId || req.body.contact_id || req.body.ContactId || req.body.contactid;
-    const conversationId = req.body.conversationId || req.body.conversation_id || req.body.ConversationId || req.body.conversationid;
-    const locationId = req.body.locationId || req.body.location_id || req.body.LocationId;
-    const messageBody = req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
-    const type = req.body.type || req.body.message_type || req.body.Type || 'SMS';
-    const contactName = req.body.contactName || req.body.contact_name || req.body.name || req.body.ContactName || 'Unknown Contact';
-    const dateAdded = req.body.dateAdded || req.body.date_added || req.body.DateAdded || req.body.created_at;
-    const assignedTo = req.body.assignedTo || req.body.assigned_to || req.body.AssignedTo;
+    // First extract customData object (where GHL puts our custom fields)
+    const customData = req.body.customData || {};
+    
+    // Accept multiple field name formats, checking customData first
+    const contactId = customData.contactId || req.body.contactId || req.body.contact_id || req.body.ContactId || req.body.contactid;
+    let conversationId = customData.conversationId || req.body.conversationId || req.body.conversation_id || req.body.ConversationId || req.body.conversationid;
+    let locationId = customData.locationId || req.body.locationId || req.body.location_id || req.body.LocationId;
+    let messageBody = customData.messageBody || req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
+    let type = customData.type || req.body.type || req.body.message_type || req.body.Type || 'SMS';
+    let contactName = customData.contactName || req.body.contactName || req.body.contact_name || req.body.name || req.body.ContactName || req.body.full_name || req.body.email || 'Unknown Contact';
+    let dateAdded = customData.dateAdded || req.body.dateAdded || req.body.date_added || req.body.DateAdded || req.body.date_created || req.body.created_at;
+    let assignedTo = customData.assignedTo || req.body.assignedTo || req.body.assigned_to || req.body.AssignedTo;
+    
+    // Check location object
+    if (!locationId && req.body.location) {
+        locationId = req.body.location.id;
+    }
+    
+    // Check message object
+    if (req.body.message) {
+        if (!messageBody) messageBody = req.body.message.body;
+        if (!type || type === 'SMS') type = req.body.message.type || 'SMS';
+    }
+    
+    // CRITICAL: If conversationId is empty, use contactId (one conversation per contact)
+    if (!conversationId || conversationId === '') {
+        console.log('⚠️  No conversationId provided, using contactId as conversation identifier');
+        conversationId = `conv_${contactId}`;
+    }
 
     console.log('📋 Extracted fields:', {
         contactId,
