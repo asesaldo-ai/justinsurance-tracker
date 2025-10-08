@@ -163,6 +163,23 @@ app.post('/webhook/incoming-message', (req, res) => {
             reason: `Not assigned to ${CONFIG.ASSIGNED_USER_FILTER}` 
         });
     }
+    
+    // Extract timestamp
+    const timestamp = dateAdded ? new Date(dateAdded).getTime() : Date.now();
+    
+    // CRITICAL: Only track messages from the last 10 minutes
+    // This prevents tracking old/historical messages when workflow first activates
+    const messageAge = Date.now() - timestamp;
+    const TEN_MINUTES = 10 * 60 * 1000;
+    
+    if (messageAge > TEN_MINUTES) {
+        console.log(`⏭️  Skipping old message (${Math.floor(messageAge / 60000)} minutes old) from ${contactName}`);
+        return res.json({ 
+            success: true, 
+            skipped: true, 
+            reason: 'Message too old (older than 10 minutes)' 
+        });
+    }
 
     let conversation = conversations.get(conversationId);
     if (!conversation) {
