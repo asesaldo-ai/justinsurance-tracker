@@ -1,4 +1,4 @@
-// JustInsurance Message Response Tracker - Backend API
+// JustInsurance Message Response Tracker - IMPROVED VERSION WITH DEBUGGING
 // Filters for "Support Team" assigned conversations only
 // Sends alerts only during business hours: Mon-Fri 8am-10pm, Sat-Sun 8am-6pm EST
 
@@ -13,6 +13,10 @@ app.use(express.json());
 
 // In-memory storage
 const conversations = new Map();
+
+// DEBUGGING: Store all webhook calls for inspection
+const webhookLog = [];
+const MAX_WEBHOOK_LOG = 100;
 
 // Configuration
 const CONFIG = {
@@ -29,7 +33,7 @@ const CONFIG = {
     SMTP_PASS: process.env.SMTP_PASS || 'your-app-password',
     
     // JustInsurance specific settings
-    ASSIGNED_USER_FILTER: 'Support Team', // Only track "Support Team" conversations
+    ASSIGNED_USER_FILTER: 'Support Team',
     
     // Business Hours (EST/EDT timezone)
     BUSINESS_HOURS: {
@@ -68,13 +72,36 @@ if (CONFIG.EMAIL_ALERTS) {
 const alertsSent = new Map();
 
 // ======================
+// HELPER FUNCTIONS
+// ======================
+
+function logWebhook(type, data) {
+    const entry = {
+        type,
+        timestamp: new Date().toISOString(),
+        data
+    };
+    webhookLog.unshift(entry);
+    if (webhookLog.length > MAX_WEBHOOK_LOG) {
+        webhookLog.pop();
+    }
+}
+
+function normalizeConversationId(conversationId, contactId) {
+    // If conversationId exists and is valid, use it
+    if (conversationId && conversationId.trim() !== '') {
+        return conversationId;
+    }
+    // Otherwise, create one from contactId
+    return `conv_${contactId}`;
+}
+
+// ======================
 // BUSINESS HOURS LOGIC
 // ======================
 
 function isWithinBusinessHours() {
     const now = new Date();
-    
-    // Get current time in EST/EDT
     const estTime = new Date(now.toLocaleString('en-US', { timeZone: CONFIG.TIMEZONE }));
     const day = estTime.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     const hour = estTime.getHours();
@@ -82,9 +109,7 @@ function isWithinBusinessHours() {
     const hours = CONFIG.BUSINESS_HOURS[day];
     if (!hours) return false;
     
-    const isOpen = hour >= hours.start && hour < hours.end;
-    
-    return isOpen;
+    return hour >= hours.start && hour < hours.end;
 }
 
 function getNextBusinessHoursTime() {
@@ -101,69 +126,58 @@ function getNextBusinessHoursTime() {
 // ======================
 
 app.post('/webhook/incoming-message', (req, res) => {
-    console.log('📨 Incoming message webhook received');
-    console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
+    const timestamp = Date.now();
+    console.log('\n📨 ==================== INCOMING MESSAGE ====================');
+    console.log('⏰ Server time:', new Date().toISOString());
+    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
     
-    // First extract customData object (where GHL puts our custom fields)
+    logWebhook('incoming', req.body);
+    
+    // Extract fields with fallbacks
     const customData = req.body.customData || {};
     
-    // Accept multiple field name formats, checking customData first
     const contactId = customData.contactId || req.body.contactId || req.body.contact_id || req.body.ContactId || req.body.contactid;
     let conversationId = customData.conversationId || req.body.conversationId || req.body.conversation_id || req.body.ConversationId || req.body.conversationid;
     let locationId = customData.locationId || req.body.locationId || req.body.location_id || req.body.LocationId;
     let messageBody = customData.messageBody || req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
     let type = customData.type || req.body.type || req.body.message_type || req.body.Type || 'SMS';
     let contactName = customData.contactName || req.body.contactName || req.body.contact_name || req.body.name || req.body.ContactName || req.body.full_name || req.body.email || 'Unknown Contact';
-    let dateAdded = customData.dateAdded || req.body.dateAdded || req.body.date_added || req.body.DateAdded;
     let assignedTo = customData.assignedTo || req.body.assignedTo || req.body.assigned_to || req.body.AssignedTo;
-    
-    // CRITICAL: GHL's "Customer Replied" trigger doesn't send message timestamp
-    // It only sends contact/conversation creation dates which can be very old
-    // So we ALWAYS use current time when webhook arrives = actual message time
-    const timestamp = Date.now();
-    
-    console.log('⏰ Using current time as message timestamp (GHL does not provide message timestamp)');
-    
-    // Check location object
+
+    // Check nested objects
     if (!locationId && req.body.location) {
         locationId = req.body.location.id;
     }
     
-    // Check message object
     if (req.body.message) {
         if (!messageBody) messageBody = req.body.message.body;
         if (!type || type === 'SMS') type = req.body.message.type || 'SMS';
     }
-    
-    // CRITICAL: If conversationId is empty, use contactId (one conversation per contact)
-    if (!conversationId || conversationId === '') {
-        console.log('⚠️  No conversationId provided, using contactId as conversation identifier');
-        conversationId = `conv_${contactId}`;
-    }
 
-    console.log('📋 Extracted fields:', {
-        contactId,
-        conversationId,
-        locationId,
-        messageBody: messageBody ? messageBody.substring(0, 50) + '...' : 'none',
-        type,
-        contactName,
-        assignedTo
-    });
+    // Normalize conversation ID
+    conversationId = normalizeConversationId(conversationId, contactId);
+
+    console.log('📋 Extracted fields:');
+    console.log('   contactId:', contactId);
+    console.log('   conversationId:', conversationId);
+    console.log('   locationId:', locationId);
+    console.log('   contactName:', contactName);
+    console.log('   assignedTo:', assignedTo);
+    console.log('   type:', type);
+    console.log('   messageBody:', messageBody ? messageBody.substring(0, 100) + '...' : 'none');
 
     if (!conversationId || !contactId) {
-        console.log('❌ Missing required fields! conversationId:', conversationId, 'contactId:', contactId);
+        console.log('❌ REJECTED: Missing required fields!');
         return res.status(400).json({ 
             error: 'Missing required fields',
             received: Object.keys(req.body),
-            needed: ['contactId or contact_id', 'conversationId or conversation_id']
+            needed: ['contactId', 'conversationId (or will be generated)']
         });
     }
 
-    // CRITICAL: Filter by assigned user
-    // Only track if assigned to "Support Team"
+    // Filter by assigned user
     if (assignedTo && assignedTo !== CONFIG.ASSIGNED_USER_FILTER) {
-        console.log(`⏭️  Skipping - Not assigned to ${CONFIG.ASSIGNED_USER_FILTER} (assigned to: ${assignedTo})`);
+        console.log(`⭐️ SKIPPED: Not assigned to ${CONFIG.ASSIGNED_USER_FILTER} (assigned to: ${assignedTo})`);
         return res.json({ 
             success: true, 
             skipped: true, 
@@ -171,24 +185,32 @@ app.post('/webhook/incoming-message', (req, res) => {
         });
     }
 
+    // Get or create conversation
     let conversation = conversations.get(conversationId);
+    const isNew = !conversation;
+    
     if (!conversation) {
         conversation = {
             conversationId,
             contactId,
-            contactName: contactName,
+            contactName,
             locationId,
             assignedTo: assignedTo || 'Support Team',
             messages: [],
             lastInbound: null,
             lastResponse: null,
-            needsResponse: false
+            needsResponse: false,
+            createdAt: timestamp
         };
         conversations.set(conversationId, conversation);
+        console.log('🆕 NEW conversation created');
+    } else {
+        console.log('♻️ EXISTING conversation found');
     }
 
+    // Add message
     conversation.messages.push({
-        id: `msg_${Date.now()}_${Math.random()}`,
+        id: `msg_${timestamp}_${Math.random()}`,
         type: 'inbound',
         body: messageBody || 'No message body',
         channel: type,
@@ -199,35 +221,78 @@ app.post('/webhook/incoming-message', (req, res) => {
     conversation.needsResponse = true;
     conversation.assignedTo = assignedTo || 'Support Team';
 
-    console.log(`✅ Tracked Support Team message: ${contactName} (${conversationId})`);
+    console.log(`✅ SUCCESS: Tracked message for ${contactName}`);
+    console.log(`   Conversation: ${conversationId}`);
+    console.log(`   Needs Response: ${conversation.needsResponse}`);
+    console.log(`   Total messages in this conversation: ${conversation.messages.length}`);
+    console.log('=========================================================\n');
     
-    res.json({ success: true, conversationId, assignedTo: conversation.assignedTo });
+    res.json({ 
+        success: true, 
+        conversationId, 
+        contactId,
+        assignedTo: conversation.assignedTo,
+        isNew,
+        timestamp 
+    });
 });
 
 app.post('/webhook/outgoing-message', (req, res) => {
-    console.log('📤 Outgoing message webhook received');
-    console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
+    const timestamp = Date.now();
+    console.log('\n📤 ==================== OUTGOING MESSAGE ====================');
+    console.log('⏰ Server time:', new Date().toISOString());
+    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
     
-    // Accept multiple field name formats
-    const conversationId = req.body.conversationId || req.body.conversation_id || req.body.ConversationId;
-    const messageBody = req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
-    const userId = req.body.userId || req.body.user_id || req.body.UserId;
-    const dateAdded = req.body.dateAdded || req.body.date_added || req.body.DateAdded || req.body.created_at;
+    logWebhook('outgoing', req.body);
+    
+    // Extract fields with fallbacks
+    const customData = req.body.customData || {};
+    let conversationId = customData.conversationId || req.body.conversationId || req.body.conversation_id || req.body.ConversationId;
+    const contactId = customData.contactId || req.body.contactId || req.body.contact_id || req.body.ContactId;
+    const messageBody = customData.messageBody || req.body.messageBody || req.body.message_body || req.body.body || req.body.MessageBody;
+    const userId = customData.userId || req.body.userId || req.body.user_id || req.body.UserId;
+
+    console.log('📋 Extracted fields:');
+    console.log('   conversationId:', conversationId);
+    console.log('   contactId:', contactId);
+    console.log('   userId:', userId);
+
+    // Try to normalize conversation ID if we have contactId
+    if (contactId) {
+        conversationId = normalizeConversationId(conversationId, contactId);
+        console.log('   normalized conversationId:', conversationId);
+    }
 
     if (!conversationId) {
-        console.log('❌ Missing conversationId in outgoing webhook');
+        console.log('❌ REJECTED: Missing conversationId');
         return res.status(400).json({ error: 'Missing conversationId' });
     }
 
-    const conversation = conversations.get(conversationId);
-    if (!conversation) {
-        console.log(`⚠️ Conversation ${conversationId} not tracked (might not be Support Team)`);
-        return res.json({ success: true, note: 'Conversation not tracked' });
+    // Try to find the conversation
+    let conversation = conversations.get(conversationId);
+    
+    // If not found and we have contactId, try the conv_ format
+    if (!conversation && contactId) {
+        const altConvId = `conv_${contactId}`;
+        conversation = conversations.get(altConvId);
+        if (conversation) {
+            console.log(`🔄 Found conversation using alternative ID: ${altConvId}`);
+            conversationId = altConvId;
+        }
     }
 
-    const timestamp = dateAdded ? new Date(dateAdded).getTime() : Date.now();
+    if (!conversation) {
+        console.log(`⚠️ Conversation ${conversationId} not found in tracking`);
+        console.log(`   Currently tracking ${conversations.size} conversations:`);
+        for (const [key, conv] of conversations.entries()) {
+            console.log(`     - ${key} (${conv.contactName})`);
+        }
+        return res.json({ success: true, note: 'Conversation not tracked', conversationId });
+    }
+
+    // Add outbound message
     conversation.messages.push({
-        id: `msg_${Date.now()}_${Math.random()}`,
+        id: `msg_${timestamp}_${Math.random()}`,
         type: 'outbound',
         body: messageBody || 'Response sent',
         userId,
@@ -237,12 +302,61 @@ app.post('/webhook/outgoing-message', (req, res) => {
     conversation.lastResponse = timestamp;
     conversation.needsResponse = false;
 
+    // Clear alerts
     alertsSent.delete(`${conversationId}-warning`);
     alertsSent.delete(`${conversationId}-critical`);
 
-    console.log(`✅ Response recorded for Support Team: ${conversationId}`);
+    console.log(`✅ SUCCESS: Response recorded`);
+    console.log(`   Conversation: ${conversationId}`);
+    console.log(`   Contact: ${conversation.contactName}`);
+    console.log(`   Needs Response: ${conversation.needsResponse}`);
+    console.log(`   Total messages: ${conversation.messages.length}`);
+    console.log('=========================================================\n');
     
-    res.json({ success: true, conversationId });
+    res.json({ success: true, conversationId, contactId, needsResponse: false });
+});
+
+// ======================
+// DEBUGGING ENDPOINTS
+// ======================
+
+app.get('/api/debug/webhooks', (req, res) => {
+    res.json({
+        success: true,
+        count: webhookLog.length,
+        webhooks: webhookLog.slice(0, 20) // Last 20 webhooks
+    });
+});
+
+app.get('/api/debug/conversations', (req, res) => {
+    const conversationList = Array.from(conversations.entries()).map(([id, conv]) => ({
+        id,
+        contactName: conv.contactName,
+        contactId: conv.contactId,
+        assignedTo: conv.assignedTo,
+        needsResponse: conv.needsResponse,
+        messageCount: conv.messages.length,
+        lastInbound: conv.lastInbound ? new Date(conv.lastInbound).toISOString() : null,
+        lastResponse: conv.lastResponse ? new Date(conv.lastResponse).toISOString() : null,
+        elapsed: conv.lastInbound ? Date.now() - conv.lastInbound : 0
+    }));
+
+    res.json({
+        success: true,
+        totalConversations: conversations.size,
+        conversations: conversationList
+    });
+});
+
+app.get('/api/debug/conversation/:id', (req, res) => {
+    const conversation = conversations.get(req.params.id);
+    if (!conversation) {
+        return res.status(404).json({ 
+            error: 'Conversation not found',
+            availableIds: Array.from(conversations.keys())
+        });
+    }
+    res.json({ success: true, conversation });
 });
 
 // ======================
@@ -253,13 +367,29 @@ app.get('/api/pending-messages', (req, res) => {
     const now = Date.now();
     const pending = [];
 
+    console.log(`\n🔍 Checking pending messages at ${new Date().toISOString()}`);
+    console.log(`   Total conversations tracked: ${conversations.size}`);
+
     for (const [conversationId, conversation] of conversations.entries()) {
-        if (!conversation.needsResponse) continue;
+        console.log(`   Checking ${conversationId}:`);
+        console.log(`     - needsResponse: ${conversation.needsResponse}`);
+        console.log(`     - assignedTo: ${conversation.assignedTo}`);
         
-        // Double-check it's still assigned to Support Team
-        if (conversation.assignedTo !== CONFIG.ASSIGNED_USER_FILTER) continue;
+        if (!conversation.needsResponse) {
+            console.log(`     ⏭️ Skipped (already responded)`);
+            continue;
+        }
+        
+        if (conversation.assignedTo !== CONFIG.ASSIGNED_USER_FILTER) {
+            console.log(`     ⏭️ Skipped (not Support Team)`);
+            continue;
+        }
 
         const elapsed = now - conversation.lastInbound;
+        const minutes = Math.floor(elapsed / 60000);
+        
+        console.log(`     ✅ PENDING - ${minutes} minutes elapsed`);
+
         const lastMessage = conversation.messages
             .filter(m => m.type === 'inbound')
             .sort((a, b) => b.timestamp - a.timestamp)[0];
@@ -280,12 +410,15 @@ app.get('/api/pending-messages', (req, res) => {
 
     pending.sort((a, b) => b.elapsed - a.elapsed);
 
+    console.log(`   📊 Returning ${pending.length} pending messages\n`);
+
     res.json({
         success: true,
         count: pending.length,
         messages: pending,
         businessHours: isWithinBusinessHours(),
-        filter: CONFIG.ASSIGNED_USER_FILTER
+        filter: CONFIG.ASSIGNED_USER_FILTER,
+        serverTime: new Date().toISOString()
     });
 });
 
@@ -314,17 +447,21 @@ app.delete('/api/conversations', (req, res) => {
     const count = conversations.size;
     conversations.clear();
     alertsSent.clear();
-    console.log(`🗑️  Cleared ${count} conversations`);
+    webhookLog.length = 0;
+    console.log(`🗑️ Cleared ${count} conversations`);
     res.json({ success: true, message: `Cleared ${count} conversations` });
 });
 
 app.get('/health', (req, res) => {
     const businessHours = isWithinBusinessHours();
+    const pending = Array.from(conversations.values()).filter(c => c.needsResponse && c.assignedTo === CONFIG.ASSIGNED_USER_FILTER);
+    
     res.json({
         success: true,
         status: 'running',
+        serverTime: new Date().toISOString(),
         conversations: conversations.size,
-        pending: Array.from(conversations.values()).filter(c => c.needsResponse).length,
+        pending: pending.length,
         uptime: Math.floor(process.uptime()),
         businessHours: businessHours,
         businessStatus: businessHours ? 'OPEN' : 'CLOSED',
@@ -352,9 +489,8 @@ function getStatus(elapsed) {
 async function sendEmailAlert(conversation, alertType) {
     if (!CONFIG.EMAIL_ALERTS || !emailTransporter) return;
 
-    // CRITICAL: Only send emails during business hours
     if (!isWithinBusinessHours()) {
-        console.log(`⏸️  Alert skipped (after hours): ${alertType} for ${conversation.contactName}`);
+        console.log(`⏸️ Alert skipped (after hours): ${alertType} for ${conversation.contactName}`);
         return;
     }
 
@@ -446,8 +582,6 @@ setInterval(() => {
     
     for (const [conversationId, conversation] of conversations.entries()) {
         if (!conversation.needsResponse) continue;
-        
-        // Skip if not Support Team
         if (conversation.assignedTo !== CONFIG.ASSIGNED_USER_FILTER) continue;
         
         checked++;
@@ -456,14 +590,12 @@ setInterval(() => {
         
         if (elapsed >= CONFIG.CRITICAL_THRESHOLD) {
             criticals++;
-            // Only send email during business hours
             if (businessHours) {
                 sendEmailAlert(conversation, 'critical');
             }
         }
         else if (elapsed >= CONFIG.WARNING_THRESHOLD) {
             warnings++;
-            // Only send email during business hours
             if (businessHours) {
                 sendEmailAlert(conversation, 'warning');
             }
@@ -474,7 +606,7 @@ setInterval(() => {
         const status = businessHours ? '🟢 BUSINESS HOURS' : '🔴 AFTER HOURS';
         console.log(`🔍 ${status} - Checked ${checked} Support Team messages (${warnings} warnings, ${criticals} critical)`);
     }
-}, 30000); // Check every 30 seconds
+}, 30000);
 
 // ======================
 // START SERVER
@@ -483,46 +615,48 @@ setInterval(() => {
 const server = app.listen(CONFIG.PORT, () => {
     const businessHours = isWithinBusinessHours();
     console.log(`
-╔════════════════════════════════════════════════════════════╗
+╔═══════════════════════════════════════════════════════════╗
 ║          JustInsurance Message Response Tracker            ║
-╚════════════════════════════════════════════════════════════╝
+║                    IMPROVED VERSION                        ║
+╚═══════════════════════════════════════════════════════════╝
 
 🌐 Server: http://localhost:${CONFIG.PORT}
 📡 Environment: ${process.env.NODE_ENV || 'development'}
 ${businessHours ? '🟢 STATUS: BUSINESS HOURS - Alerts ACTIVE' : '🔴 STATUS: AFTER HOURS - Alerts PAUSED'}
 
-⚙️  JUSTINSURANCE CONFIGURATION:
+⚙️ CONFIGURATION:
    └─ Assigned User Filter: "${CONFIG.ASSIGNED_USER_FILTER}"
    └─ Warning Alert: ${CONFIG.WARNING_THRESHOLD/60000} minutes
    └─ Critical Alert: ${CONFIG.CRITICAL_THRESHOLD/60000} minutes
    └─ Email Alerts: ${CONFIG.EMAIL_ALERTS ? '✅ ENABLED' : '❌ DISABLED'}
-   └─ Email Recipients: ${CONFIG.EMAIL_TO.join(', ')}
    └─ Timezone: ${CONFIG.TIMEZONE}
 
 📅 BUSINESS HOURS (${CONFIG.TIMEZONE}):
    └─ Monday-Friday: 8:00 AM - 10:00 PM
    └─ Saturday-Sunday: 8:00 AM - 6:00 PM
-   ${!businessHours ? `└─ ${getNextBusinessHoursTime()}` : ''}
 
-📍 WEBHOOK ENDPOINTS:
+🔧 DEBUGGING ENDPOINTS:
+   🐛 Recent Webhooks: GET /api/debug/webhooks
+   🐛 All Conversations: GET /api/debug/conversations
+   🐛 Specific Conversation: GET /api/debug/conversation/:id
+
+📥 WEBHOOK ENDPOINTS:
    📨 Incoming: POST /webhook/incoming-message
-      └─ Note: Only tracks if assignedTo = "${CONFIG.ASSIGNED_USER_FILTER}"
    📤 Outgoing: POST /webhook/outgoing-message
 
-📍 API ENDPOINTS:
+📊 API ENDPOINTS:
    📊 Pending Messages: GET /api/pending-messages
-   🔍 Conversation: GET /api/conversation/:id
+   📝 Conversation: GET /api/conversation/:id
    ✅ Mark Responded: POST /api/mark-responded/:id
-   🗑️  Clear All: DELETE /api/conversations
-   ❤️  Health Check: GET /health
+   🗑️ Clear All: DELETE /api/conversations
+   ❤️ Health Check: GET /health
 
 ✨ System ready! Monitoring Support Team messages... 🚀
     `);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
-    console.log('\n🛑 Shutting down JustInsurance tracker gracefully...');
+    console.log('\n🛑 Shutting down gracefully...');
     server.close(() => {
         console.log('✅ Server closed');
         process.exit(0);
@@ -530,7 +664,7 @@ process.on('SIGTERM', () => {
 });
 
 process.on('SIGINT', () => {
-    console.log('\n🛑 Shutting down JustInsurance tracker gracefully...');
+    console.log('\n🛑 Shutting down gracefully...');
     server.close(() => {
         console.log('✅ Server closed');
         process.exit(0);
